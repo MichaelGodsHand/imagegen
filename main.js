@@ -64,6 +64,13 @@ async function uploadToS3(imageBuffer, folder = 'pet-images') {
 app.use(express.json({ limit: '50mb' }));
 app.use(express.text({ type: 'text/plain', limit: '50mb' }));
 
+// State tracking for latest generation
+let latestGeneration = {
+  status: null, // null, "processing", or "completed"
+  result: null,
+  timestamp: null
+};
+
 // Routes
 app.post('/generate-image', async (req, res) => {
   try {
@@ -103,6 +110,11 @@ app.post('/generate-image', async (req, res) => {
         message: 'Please set SEGMIND_API_KEY in your .env file'
       });
     }
+    
+    // Set status to processing after validation passes
+    latestGeneration.status = 'processing';
+    latestGeneration.result = null;
+    latestGeneration.timestamp = new Date().toISOString();
     
     console.log('✅ API Key loaded (length:', apiKey.length + ')');
     const requestData = JSON.stringify({
@@ -212,41 +224,88 @@ app.post('/generate-image', async (req, res) => {
           responseData.image = dataUri;
         }
         
+        // Update latest generation state
+        latestGeneration.status = 'completed';
+        latestGeneration.result = responseData;
+        latestGeneration.timestamp = new Date().toISOString();
+        
         res.json(responseData);
       } else {
         // Try to parse as JSON
         try {
           const result = await response.json();
-          res.json({
+          const responseData = {
             success: true,
             data: result
-          });
+          };
+          
+          // Update latest generation state
+          latestGeneration.status = 'completed';
+          latestGeneration.result = responseData;
+          latestGeneration.timestamp = new Date().toISOString();
+          
+          res.json(responseData);
         } catch (jsonError) {
           // If not JSON, return as text
           const textData = await response.text();
           console.log('⚠️  Response is not JSON, returning as text');
-          res.json({
+          const responseData = {
             success: true,
             data: textData,
             contentType: response.contentType
-          });
+          };
+          
+          // Update latest generation state
+          latestGeneration.status = 'completed';
+          latestGeneration.result = responseData;
+          latestGeneration.timestamp = new Date().toISOString();
+          
+          res.json(responseData);
         }
       }
     } else {
       const errorText = await response.text();
       console.error('Segmind API Error:', response.status, errorText);
-      res.status(response.status).json({
+      const errorResponse = {
         success: false,
         error: `API Error: ${response.status}`,
         details: errorText
-      });
+      };
+      
+      // Update latest generation state with error
+      latestGeneration.status = 'completed';
+      latestGeneration.result = errorResponse;
+      latestGeneration.timestamp = new Date().toISOString();
+      
+      res.status(response.status).json(errorResponse);
     }
   } catch (error) {
     console.error('Server Error:', error);
-    res.status(500).json({
+    const errorResponse = {
       success: false,
       error: 'Internal server error',
       message: error.message
+    };
+    
+    // Update latest generation state with error
+    latestGeneration.status = 'completed';
+    latestGeneration.result = errorResponse;
+    latestGeneration.timestamp = new Date().toISOString();
+    
+    res.status(500).json(errorResponse);
+  }
+});
+
+// GET endpoint to check latest generation status
+app.get('/latest-generation', (req, res) => {
+  if (latestGeneration.status === 'processing') {
+    res.json({ status: 'processing' });
+  } else if (latestGeneration.status === 'completed' && latestGeneration.result) {
+    res.json(latestGeneration.result);
+  } else {
+    res.json({ 
+      status: 'no_generation',
+      message: 'No generation has been started yet'
     });
   }
 });
